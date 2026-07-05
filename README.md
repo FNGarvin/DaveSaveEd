@@ -40,7 +40,8 @@ The easiest way to use DaveSaveEd is to download the pre-compiled executable.
     ```
 
 ## How to Use
-::TODO::Create an animation of our app as a cursor moves to and clicks on the max bei option and display it here.
+<img width="1094" height="910" alt="image" src="https://github.com/user-attachments/assets/eec353a4-cb6e-44f3-945c-353354d9a835" />
+
 1.  **Launch `DaveSaveEd.exe`**.
 2.  **Load Save File:** Click "Load Save File..." The editor will attempt to automatically locate your game's save directory (Steam or Xbox) and pre-select the most recent save file.
     *   **Steam:** Usually named something like `GameSave_00_GD.sav`.
