@@ -79,6 +79,14 @@
 #define IDC_BTN_LOAD_SAVE           112
 #define IDC_BTN_WRITE_SAVE          113
 
+// Control IDs for jungle DLC currency UI elements.
+#define IDC_STATIC_JUNGLE_GOLD_LABEL  117
+#define IDC_STATIC_JUNGLE_GOLD_VALUE  118
+#define IDC_BTN_MAX_JUNGLE_GOLD       119
+#define IDC_STATIC_JUNGLE_FLAME_LABEL 120
+#define IDC_STATIC_JUNGLE_FLAME_VALUE 121
+#define IDC_BTN_MAX_JUNGLE_FLAME      122
+
 // --- Global Window Handles ---
 HWND g_hDlg = NULL; // Handle to the main dialog window.
 
@@ -87,6 +95,12 @@ HWND g_hStaticGoldValue = NULL;
 HWND g_hStaticBeiValue = NULL;
 HWND g_hStaticFlameValue = NULL;
 HWND g_hStaticFollowerValue = NULL;
+
+// Handles for jungle DLC currency display and buttons (buttons start disabled).
+HWND g_hStaticJungleGoldValue = NULL;
+HWND g_hStaticJungleFlameValue = NULL;
+HWND g_hBtnMaxJungleGold = NULL;
+HWND g_hBtnMaxJungleFlame = NULL;
 
 // --- Global SQLite Database Handle (for embedded reference DB) ---
 // This database stores reference data (e.g., ingredient lists) for the editor.
@@ -115,21 +129,36 @@ void UpdateCurrencyDisplay() {
     std::string follower_str = "";
 
     // If a save file is loaded, retrieve and display the actual values.
+    std::string jungle_gold_str = "";
+    std::string jungle_flame_str = "";
+
     if (g_saveGameManager.IsSaveFileLoaded()) {
-        gold_str = std::to_string(g_saveGameManager.GetGold());
-        bei_str = std::to_string(g_saveGameManager.GetBei());
-        flame_str = std::to_string(g_saveGameManager.GetArtisansFlame());
+        gold_str     = std::to_string(g_saveGameManager.GetGold());
+        bei_str      = std::to_string(g_saveGameManager.GetBei());
+        flame_str    = std::to_string(g_saveGameManager.GetArtisansFlame());
         follower_str = std::to_string(g_saveGameManager.GetFollowerCount());
+
+        bool jungleDLC = g_saveGameManager.IsJungleDLCInstalled();
+        EnableWindow(g_hBtnMaxJungleGold,  jungleDLC ? TRUE : FALSE);
+        EnableWindow(g_hBtnMaxJungleFlame, jungleDLC ? TRUE : FALSE);
+        if (jungleDLC) {
+            jungle_gold_str  = std::to_string(g_saveGameManager.GetJungleGold());
+            jungle_flame_str = std::to_string(g_saveGameManager.GetJungleArtisansFlame());
+        }
         LogMessage(LOG_INFO_LEVEL, "Currency display updated from SaveGameManager values.");
     } else {
+        EnableWindow(g_hBtnMaxJungleGold,  FALSE);
+        EnableWindow(g_hBtnMaxJungleFlame, FALSE);
         LogMessage(LOG_INFO_LEVEL, "No valid save data loaded. Displaying blank currency values.");
     }
 
     // Set the text of the static controls.
-    SetWindowTextA(g_hStaticGoldValue, gold_str.c_str());
-    SetWindowTextA(g_hStaticBeiValue, bei_str.c_str());
-    SetWindowTextA(g_hStaticFlameValue, flame_str.c_str());
-    SetWindowTextA(g_hStaticFollowerValue, follower_str.c_str());
+    SetWindowTextA(g_hStaticGoldValue,        gold_str.c_str());
+    SetWindowTextA(g_hStaticBeiValue,         bei_str.c_str());
+    SetWindowTextA(g_hStaticFlameValue,       flame_str.c_str());
+    SetWindowTextA(g_hStaticFollowerValue,    follower_str.c_str());
+    SetWindowTextA(g_hStaticJungleGoldValue,  jungle_gold_str.c_str());
+    SetWindowTextA(g_hStaticJungleFlameValue, jungle_flame_str.c_str());
 }
 
 // --- Entry Point: WinMain ---
@@ -178,7 +207,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         "DaveSaveEd",                       // NEW: Window title changed to "DaveSaveEd".
         WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // Window styles.
         CW_USEDEFAULT, CW_USEDEFAULT,       // Default position.
-        450, 340,                           // Initial size.
+        450, 420,                           // Initial size.
         NULL,                               // Parent window.
         NULL,                               // Menu handle.
         hInstance,                          // Application instance.
@@ -333,11 +362,13 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
             int dialog_client_height = client_rect.bottom - client_rect.top;
 
             // Calculate total height needed for all UI blocks.
-            int total_currency_block_height = (control_height * 4) + (spacing_y * 3);
+            int total_currency_block_height   = (control_height * 4) + (spacing_y * 3);
+            int total_jungle_block_height     = (control_height * 2) + (spacing_y * 1);
             int total_ingredient_block_height = control_height;
-            int total_file_block_height = control_height + 5; // +5 for slight extra spacing.
+            int total_file_block_height       = control_height + 5;
 
-            int total_ui_elements_height = total_currency_block_height + section_spacing_y +
+            int total_ui_elements_height = total_currency_block_height  + section_spacing_y +
+                                           total_jungle_block_height    + section_spacing_y +
                                            total_ingredient_block_height + section_spacing_y +
                                            total_file_block_height;
 
@@ -384,6 +415,23 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
                 current_value_x, y_pos, value_width, control_height, hDlg, (HMENU)IDC_STATIC_FOLLOWER_VALUE, GetModuleHandle(NULL), NULL);
             CreateWindowEx(0, "BUTTON", "Set to Max", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 current_button_x, y_pos, currency_button_width, control_height, hDlg, (HMENU)IDC_BTN_MAX_FOLLOWER, GetModuleHandle(NULL), NULL);
+            y_pos += control_height + section_spacing_y;
+
+            // Create Jungle DLC Currency UI Elements (buttons start disabled until a jungle-DLC save is loaded).
+            CreateWindowEx(WS_EX_TRANSPARENT, "STATIC", "Jungle Gold:", WS_CHILD | WS_VISIBLE,
+                current_label_x, y_pos, label_width, control_height, hDlg, (HMENU)IDC_STATIC_JUNGLE_GOLD_LABEL, GetModuleHandle(NULL), NULL);
+            g_hStaticJungleGoldValue = CreateWindowEx(0, "STATIC", "", WS_CHILD | WS_VISIBLE | SS_CENTER | SS_ENDELLIPSIS,
+                current_value_x, y_pos, value_width, control_height, hDlg, (HMENU)IDC_STATIC_JUNGLE_GOLD_VALUE, GetModuleHandle(NULL), NULL);
+            g_hBtnMaxJungleGold = CreateWindowEx(0, "BUTTON", "Set to Max", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
+                current_button_x, y_pos, currency_button_width, control_height, hDlg, (HMENU)IDC_BTN_MAX_JUNGLE_GOLD, GetModuleHandle(NULL), NULL);
+            y_pos += control_height + spacing_y;
+
+            CreateWindowEx(WS_EX_TRANSPARENT, "STATIC", "Jungle Flame:", WS_CHILD | WS_VISIBLE,
+                current_label_x, y_pos, label_width, control_height, hDlg, (HMENU)IDC_STATIC_JUNGLE_FLAME_LABEL, GetModuleHandle(NULL), NULL);
+            g_hStaticJungleFlameValue = CreateWindowEx(0, "STATIC", "", WS_CHILD | WS_VISIBLE | SS_CENTER | SS_ENDELLIPSIS,
+                current_value_x, y_pos, value_width, control_height, hDlg, (HMENU)IDC_STATIC_JUNGLE_FLAME_VALUE, GetModuleHandle(NULL), NULL);
+            g_hBtnMaxJungleFlame = CreateWindowEx(0, "BUTTON", "Set to Max", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
+                current_button_x, y_pos, currency_button_width, control_height, hDlg, (HMENU)IDC_BTN_MAX_JUNGLE_FLAME, GetModuleHandle(NULL), NULL);
             y_pos += control_height + section_spacing_y;
 
 
@@ -446,6 +494,24 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
                     LogMessage(LOG_INFO_LEVEL, "Max Follower Count button clicked.");
                     if (g_saveGameManager.IsSaveFileLoaded()) {
                         g_saveGameManager.SetFollowerCount(99999);
+                        UpdateCurrencyDisplay();
+                    } else {
+                        MessageBox(hDlg, "No save file loaded or valid data to modify!", "Error", MB_ICONWARNING | MB_OK);
+                    }
+                    break;
+                case IDC_BTN_MAX_JUNGLE_GOLD:
+                    LogMessage(LOG_INFO_LEVEL, "Max Jungle Gold button clicked.");
+                    if (g_saveGameManager.IsSaveFileLoaded()) {
+                        g_saveGameManager.SetJungleGold(999999999);
+                        UpdateCurrencyDisplay();
+                    } else {
+                        MessageBox(hDlg, "No save file loaded or valid data to modify!", "Error", MB_ICONWARNING | MB_OK);
+                    }
+                    break;
+                case IDC_BTN_MAX_JUNGLE_FLAME:
+                    LogMessage(LOG_INFO_LEVEL, "Max Jungle Flame button clicked.");
+                    if (g_saveGameManager.IsSaveFileLoaded()) {
+                        g_saveGameManager.SetJungleArtisansFlame(999999);
                         UpdateCurrencyDisplay();
                     } else {
                         MessageBox(hDlg, "No save file loaded or valid data to modify!", "Error", MB_ICONWARNING | MB_OK);

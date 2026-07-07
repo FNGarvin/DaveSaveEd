@@ -405,6 +405,39 @@ void SaveGameManager::SetBei(long long value) { m_saveData["PlayerInfo"]["m_Bei"
 void SaveGameManager::SetArtisansFlame(long long value) { m_saveData["PlayerInfo"]["m_ChefFlame"] = std::min(value, SAVE_MAX_CURRENCY); }
 void SaveGameManager::SetFollowerCount(long long value) { m_saveData["SNSInfo"]["m_Follow_Count"] = value; }
 
+// --- Jungle DLC ---
+bool SaveGameManager::IsJungleDLCInstalled() const {
+    if (!m_isSaveFileLoaded) return false;
+    if (!m_saveData["GameInfo"]["installedDLCs"].is_array()) return false;
+    for (const auto& dlc : m_saveData["GameInfo"]["installedDLCs"])
+        if (dlc.get<int>() == 14250001) return true;
+    return false;
+}
+
+long long SaveGameManager::GetJungleGold() const {
+    if (m_saveData.contains("JDLCContents") &&
+        m_saveData["JDLCContents"].contains("junglePlayerInfoSave") &&
+        m_saveData["JDLCContents"]["junglePlayerInfoSave"].contains("jungleGold"))
+        return m_saveData["JDLCContents"]["junglePlayerInfoSave"]["jungleGold"];
+    return 0;
+}
+
+long long SaveGameManager::GetJungleArtisansFlame() const {
+    if (m_saveData.contains("JDLCContents") &&
+        m_saveData["JDLCContents"].contains("junglePlayerInfoSave") &&
+        m_saveData["JDLCContents"]["junglePlayerInfoSave"].contains("jungleChefFlame"))
+        return m_saveData["JDLCContents"]["junglePlayerInfoSave"]["jungleChefFlame"];
+    return 0;
+}
+
+void SaveGameManager::SetJungleGold(long long value) {
+    m_saveData["JDLCContents"]["junglePlayerInfoSave"]["jungleGold"] = std::min(value, SAVE_MAX_CURRENCY);
+}
+
+void SaveGameManager::SetJungleArtisansFlame(long long value) {
+    m_saveData["JDLCContents"]["junglePlayerInfoSave"]["jungleChefFlame"] = std::min(value, SAVE_MAX_CURRENCY);
+}
+
 // --- Ingredients Helpers ---
 static int GetDesiredMaxCountForTier(int item_db_max_count) {
     if (item_db_max_count >= 9999) return 6666;
@@ -415,63 +448,104 @@ static int GetDesiredMaxCountForTier(int item_db_max_count) {
 
 void SaveGameManager::MaxOwnIngredients(sqlite3* db) {
     if (!m_isSaveFileLoaded || !db) return;
+
+    // Ocean ingredients: look up MaxCount via Items.ItemDataID
     sqlite3_stmt *stmt = nullptr;
     sqlite3_prepare_v2(db, "SELECT MaxCount FROM Items WHERE ItemDataID = ?;", -1, &stmt, NULL);
-    
     for (auto& item : m_saveData["Ingredients"].items()) {
         if (item.value().contains("ingredientsID")) {
-             sqlite3_reset(stmt);
-             sqlite3_bind_int(stmt, 1, item.value()["ingredientsID"]);
-             if (sqlite3_step(stmt) == SQLITE_ROW) {
-                 int max = sqlite3_column_int(stmt, 0);
-                 int target = GetDesiredMaxCountForTier(max);
-                 if (target > 0) item.value()["count"] = target;
-             }
+            sqlite3_reset(stmt);
+            sqlite3_bind_int(stmt, 1, item.value()["ingredientsID"]);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                int max = sqlite3_column_int(stmt, 0);
+                int target = GetDesiredMaxCountForTier(max);
+                if (target > 0) item.value()["count"] = target;
+            }
         }
     }
     sqlite3_finalize(stmt);
+
+    // Jungle ingredients: look up MaxCount via Items.TID (parentID in save)
+    if (!IsJungleDLCInstalled()) return;
+    if (!m_saveData["JDLCContents"].contains("jungleIngredientsSave")) return;
+
+    sqlite3_stmt *jstmt = nullptr;
+    sqlite3_prepare_v2(db, "SELECT MaxCount FROM Items WHERE TID = ?;", -1, &jstmt, NULL);
+    for (auto& item : m_saveData["JDLCContents"]["jungleIngredientsSave"].items()) {
+        if (item.value().contains("parentID")) {
+            sqlite3_reset(jstmt);
+            sqlite3_bind_int(jstmt, 1, item.value()["parentID"]);
+            if (sqlite3_step(jstmt) == SQLITE_ROW) {
+                int max = sqlite3_column_int(jstmt, 0);
+                int target = GetDesiredMaxCountForTier(max);
+                if (target > 0) item.value()["count"] = target;
+            }
+        }
+    }
+    sqlite3_finalize(jstmt);
 }
 
 void SaveGameManager::MaxAllIngredients(sqlite3* db) {
     if (!m_isSaveFileLoaded || !db) return;
-    const std::map<int, int> dlcTypeToIdMap = { {1, 14252001}, {3, 14252201}, {5, 14252401} };
+    const std::map<int, int> dlcTypeToIdMap = { {1, 14252001}, {3, 14252201}, {4, 14250001}, {5, 14252401} };
     std::set<int> installedDlcIds;
     if (m_saveData["GameInfo"]["installedDLCs"].is_array()) {
         for (const auto& dlc : m_saveData["GameInfo"]["installedDLCs"]) installedDlcIds.insert(dlc.get<int>());
     }
 
-    std::vector<std::map<std::string, int>> all_db_ingredients; 
     sqlite3_stmt *stmt = nullptr;
     const char* sql = "SELECT I.TID, T.TID as pID, T.MaxCount, T.DLCType FROM Ingredients I JOIN Items T ON I.TID = T.ItemDataID";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return;
 
+    bool jungleInstalled = installedDlcIds.count(14250001) > 0;
+
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        int id = sqlite3_column_int(stmt, 0);
+        int id     = sqlite3_column_int(stmt, 0);
         int parent = sqlite3_column_int(stmt, 1);
-        int max = sqlite3_column_int(stmt, 2);
-        int dlc = sqlite3_column_int(stmt, 3);
-        
+        int max    = sqlite3_column_int(stmt, 2);
+        int dlc    = sqlite3_column_int(stmt, 3);
+
         if (dlcTypeToIdMap.count(dlc) && !installedDlcIds.count(dlcTypeToIdMap.at(dlc))) continue;
 
         int target = GetDesiredMaxCountForTier(max);
         if (target == 0) continue;
 
         std::string key = std::to_string(id);
-        if (m_saveData["Ingredients"].contains(key)) {
-            m_saveData["Ingredients"][key]["count"] = target;
+
+        if (id > 99999999) {
+            // 9-digit TID → jungle fish/material ingredient → jungleIngredientsSave
+            if (!jungleInstalled) continue;
+            if (!m_saveData["JDLCContents"].contains("jungleIngredientsSave")) continue;
+            if (m_saveData["JDLCContents"]["jungleIngredientsSave"].contains(key)) {
+                m_saveData["JDLCContents"]["jungleIngredientsSave"][key]["count"] = target;
+            } else {
+                ordered_json entry;
+                entry["ingredientID"] = id;
+                entry["count"] = target;
+                entry["isNew"] = true;
+                entry["level"] = 1;
+                entry["parentID"] = parent;
+                entry["lastGainTime"] = "04/01/2025 12:34:56";
+                entry["lastGainGameTime"] = "10/03/2022 08:30:52";
+                m_saveData["JDLCContents"]["jungleIngredientsSave"][key] = entry;
+            }
         } else {
-            // MUST USE ordered_json for new entries
-            ordered_json entry;
-            entry["ingredientsID"] = id;
-            entry["parentID"] = parent;
-            entry["count"] = target;
-            entry["level"] = 1;
-            entry["branchCount"] = 0;
-            entry["isNew"] = true;
-            entry["placeTagMask"] = 1;
-            entry["lastGainTime"] = "04/01/2025 12:34:56"; 
-            entry["lastGainGameTime"] = "10/03/2022 08:30:52";
-            m_saveData["Ingredients"][key] = entry;
+            // 8-digit TID → ocean or jungle farm ingredient → main Ingredients section
+            if (m_saveData["Ingredients"].contains(key)) {
+                m_saveData["Ingredients"][key]["count"] = target;
+            } else {
+                ordered_json entry;
+                entry["ingredientsID"] = id;
+                entry["parentID"] = parent;
+                entry["count"] = target;
+                entry["level"] = 1;
+                entry["branchCount"] = 0;
+                entry["isNew"] = true;
+                entry["placeTagMask"] = 1;
+                entry["lastGainTime"] = "04/01/2025 12:34:56";
+                entry["lastGainGameTime"] = "10/03/2022 08:30:52";
+                m_saveData["Ingredients"][key] = entry;
+            }
         }
     }
     sqlite3_finalize(stmt);

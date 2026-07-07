@@ -66,6 +66,13 @@ public:
     void SetArtisansFlame(long long value);
     void SetFollowerCount(long long value);
 
+    // Jungle DLC
+    bool IsJungleDLCInstalled() const;
+    long long GetJungleGold() const;
+    long long GetJungleArtisansFlame() const;
+    void SetJungleGold(long long value);
+    void SetJungleArtisansFlame(long long value);
+
     // Ingredient Modifications
     void MaxOwnIngredients(sqlite3* db);
     void MaxAllIngredients(sqlite3* db);

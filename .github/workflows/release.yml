@@ -1,0 +1,62 @@
+name: Build and Release
+
+# Triggers on version tags: git tag v1.7 && git push origin v1.7
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write      # create releases, upload assets
+  id-token: write      # OIDC token for provenance signing
+  attestations: write  # store build attestation
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Sets cl.exe, link.exe, rc.exe, and all MSVC/SDK paths into the environment.
+      # Equivalent to opening a "Developer Command Prompt for VS x64".
+      - name: Set up MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Derives a bare version string (e.g. "1.7b") from the tag (e.g. "v1.7b")
+      # and the full release name used by the Makefile.
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v', ''
+          "VERSION=$ver"                                | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "RELEASE_NAME=DaveSaveEd_Release_v${ver}_Win64" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # nmake RELEASE_NAME=... overrides the macro defined in the Makefile, so no
+      # manual version bump in the file is needed before tagging.
+      - name: Build release package
+        shell: cmd
+        run: nmake RELEASE_NAME="${{ steps.version.outputs.RELEASE_NAME }}" release
+
+      # Generates SLSA Build L1 provenance and attaches it to the zip in the
+      # GitHub attestations store, verifiable with: gh attestation verify <zip>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: releases/${{ steps.version.outputs.RELEASE_NAME }}.zip
+
+      # gh CLI is pre-installed on all GitHub-hosted runners.
+      # --generate-notes pulls from merged PRs and commits since the last tag.
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            --title "DaveSaveEd ${{ github.ref_name }}" `
+            --generate-notes `
+            "releases/${{ steps.version.outputs.RELEASE_NAME }}.zip"
