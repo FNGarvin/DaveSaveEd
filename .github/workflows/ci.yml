@@ -22,6 +22,17 @@ jobs:
         with:
           arch: x64
 
+      - name: Build zlib from source
+        shell: cmd
+        run: |
+          curl -fsSL https://zlib.net/zlib-1.3.1.tar.gz -o zlib.tar.gz
+          tar -xf zlib.tar.gz
+          cd zlib-1.3.1
+          nmake /f win32\Makefile.msc
+          cd ..
+          if not exist dist\zlib\lib\x64 mkdir dist\zlib\lib\x64
+          copy zlib-1.3.1\zlib.lib dist\zlib\lib\x64\zlib.lib
+
       - name: Build
         shell: cmd
         run: nmake build
