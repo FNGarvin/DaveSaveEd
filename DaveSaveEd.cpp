@@ -31,10 +31,16 @@
 //
 #include <windows.h>    // Basic Windows API functions
 #include <windowsx.h>   // For GET_WM_COMMAND_ID macro
+#include <commctrl.h>   // For ListView common control
 #include <string>       // For std::string
 #include <filesystem>   // For std::filesystem (C++17 for path manipulation) - Kept for std::filesystem::path
 #include <string.h>     // For strstr (for parsing command-line arguments)
 #include <vector>       // For std::vector (used in zlib decompression)
+#include <algorithm>    // For std::replace
+#include <map>          // For std::map (inventory pending changes)
+
+// Use Common Controls v6 (visual styles, proper ListView rendering)
+#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 // Include SQLite3 header
 #include "sqlite3.h"
@@ -87,6 +93,14 @@
 #define IDC_STATIC_JUNGLE_FLAME_VALUE 121
 #define IDC_BTN_MAX_JUNGLE_FLAME      122
 
+// Inventory editor button (main window)
+#define IDC_BTN_EDIT_INVENTORY        123
+
+// Inventory dialog controls
+#define IDC_LIST_INVENTORY            200
+#define IDC_BTN_INV_OK                201
+#define IDC_BTN_INV_CANCEL            202
+
 // --- Global Window Handles ---
 HWND g_hDlg = NULL; // Handle to the main dialog window.
 
@@ -101,6 +115,9 @@ HWND g_hStaticJungleGoldValue = NULL;
 HWND g_hStaticJungleFlameValue = NULL;
 HWND g_hBtnMaxJungleGold = NULL;
 HWND g_hBtnMaxJungleFlame = NULL;
+
+// Inventory editor button (disabled until a save is loaded).
+HWND g_hBtnEditInventory = NULL;
 
 // --- Global SQLite Database Handle (for embedded reference DB) ---
 // This database stores reference data (e.g., ingredient lists) for the editor.
@@ -141,6 +158,7 @@ void UpdateCurrencyDisplay() {
         bool jungleDLC = g_saveGameManager.IsJungleDLCInstalled();
         EnableWindow(g_hBtnMaxJungleGold,  jungleDLC ? TRUE : FALSE);
         EnableWindow(g_hBtnMaxJungleFlame, jungleDLC ? TRUE : FALSE);
+        EnableWindow(g_hBtnEditInventory,  TRUE);
         if (jungleDLC) {
             jungle_gold_str  = std::to_string(g_saveGameManager.GetJungleGold());
             jungle_flame_str = std::to_string(g_saveGameManager.GetJungleArtisansFlame());
@@ -149,6 +167,7 @@ void UpdateCurrencyDisplay() {
     } else {
         EnableWindow(g_hBtnMaxJungleGold,  FALSE);
         EnableWindow(g_hBtnMaxJungleFlame, FALSE);
+        EnableWindow(g_hBtnEditInventory,  FALSE);
         LogMessage(LOG_INFO_LEVEL, "No valid save data loaded. Displaying blank currency values.");
     }
 
@@ -171,6 +190,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     bool enableFileLogging = (strstr(lpCmdLine, "-log") != nullptr);
     Logger::Initialize("DaveSaveEd", enableFileLogging, BIN_DIRECTORY); // Initialize the logging system.
     LogMessage(LOG_INFO_LEVEL, "Application started.");
+
+    // Initialize Common Controls (ListView etc.)
+    INITCOMMONCONTROLSEX icex = { sizeof(icex), ICC_LISTVIEW_CLASSES };
+    InitCommonControlsEx(&icex);
 
     // Initialize COM (Component Object Model) for functions like SHGetKnownFolderPath.
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -207,7 +230,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         "DaveSaveEd",                       // NEW: Window title changed to "DaveSaveEd".
         WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // Window styles.
         CW_USEDEFAULT, CW_USEDEFAULT,       // Default position.
-        450, 420,                           // Initial size.
+        450, 460,                           // Initial size.
         NULL,                               // Parent window.
         NULL,                               // Menu handle.
         hInstance,                          // Application instance.
@@ -258,6 +281,350 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     CoUninitialize(); // Uninitialize COM.
     Logger::Shutdown(); // Shut down the logging system.
     return (int)msg.wParam;
+}
+
+// ---------------------------------------------------------------------------
+// Inventory Editor Dialog
+// ---------------------------------------------------------------------------
+
+struct InventoryDlgData {
+    std::vector<InventoryEntry> entries;
+    std::map<int, int>          pendingChanges; // list index → new count
+    HWND hList;
+    HWND hFloatEdit;
+    int  editingItem;
+};
+
+// Commits the current float-edit value into pendingChanges and destroys the edit control.
+// When multiple rows are selected the value is broadcast to all of them, each clamped
+// to its own maxCount.
+static void CommitFloatEdit(InventoryDlgData* pData) {
+    if (!pData || pData->editingItem < 0 || !pData->hFloatEdit) return;
+
+    char buf[32] = {};
+    GetWindowTextA(pData->hFloatEdit, buf, sizeof(buf));
+    int val = atoi(buf);
+    if (val < 0) val = 0;
+    // Clamp against the anchor item the edit was opened on.
+    const InventoryEntry& anchor = pData->entries[pData->editingItem];
+    if (anchor.maxCount != 9999 && val > anchor.maxCount) val = anchor.maxCount;
+
+    // Apply to every selected row (single-select is just the normal case).
+    int n = (int)pData->entries.size();
+    for (int i = 0; i < n; ++i) {
+        if (!(ListView_GetItemState(pData->hList, i, LVIS_SELECTED) & LVIS_SELECTED))
+            continue;
+        int clamped = val;
+        if (pData->entries[i].maxCount != 9999 && clamped > pData->entries[i].maxCount)
+            clamped = pData->entries[i].maxCount;
+        pData->pendingChanges[i] = clamped;
+        char numBuf[32];
+        _snprintf_s(numBuf, sizeof(numBuf), "%d", clamped);
+        LVITEMA lvi = {};
+        lvi.iSubItem = 1;
+        lvi.pszText  = numBuf;
+        SendMessageA(pData->hList, LVM_SETITEMTEXT, (WPARAM)i, (LPARAM)&lvi);
+    }
+
+    HWND hEdit       = pData->hFloatEdit;
+    pData->hFloatEdit  = NULL;
+    pData->editingItem = -1;
+    DestroyWindow(hEdit);
+}
+
+// Subclass proc for the floating edit control.
+static LRESULT CALLBACK FloatEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                               UINT_PTR, DWORD_PTR dwRefData) {
+    InventoryDlgData* pData = reinterpret_cast<InventoryDlgData*>(dwRefData);
+
+    if (msg == WM_KEYDOWN) {
+        if (wParam == VK_ESCAPE) {
+            // Discard — just destroy without committing
+            HWND hEdit       = pData->hFloatEdit;
+            pData->hFloatEdit  = NULL;
+            pData->editingItem = -1;
+            DestroyWindow(hEdit);
+            return 0;
+        }
+        if (wParam == VK_RETURN || wParam == VK_TAB) {
+            CommitFloatEdit(pData);
+            return 0;
+        }
+    }
+    if (msg == WM_KILLFOCUS) {
+        CommitFloatEdit(pData);
+        return 0;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+// Opens a floating edit control over the Count cell of the given item index.
+static void OpenFloatEdit(InventoryDlgData* pData, int itemIndex) {
+    CommitFloatEdit(pData); // commit any prior edit first
+
+    RECT cellRc;
+    ListView_GetSubItemRect(pData->hList, itemIndex, 1, LVIR_BOUNDS, &cellRc);
+
+    char buf[32] = {};
+    auto it = pData->pendingChanges.find(itemIndex);
+    if (it != pData->pendingChanges.end())
+        _snprintf_s(buf, sizeof(buf), "%d", it->second);
+    else
+        _snprintf_s(buf, sizeof(buf), "%d", pData->entries[itemIndex].count);
+
+    pData->hFloatEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", buf,
+        WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+        cellRc.left, cellRc.top,
+        cellRc.right - cellRc.left, cellRc.bottom - cellRc.top,
+        pData->hList, NULL, GetModuleHandle(NULL), NULL);
+    pData->editingItem = itemIndex;
+
+    SetWindowSubclass(pData->hFloatEdit, FloatEditSubclassProc, 1,
+                      reinterpret_cast<DWORD_PTR>(pData));
+    SendMessage(pData->hFloatEdit, EM_SETLIMITTEXT, 10, 0);
+    SendMessage(pData->hFloatEdit, EM_SETSEL, 0, -1);
+    SetFocus(pData->hFloatEdit);
+}
+
+// Inventory dialog window procedure.
+static LRESULT CALLBACK InvDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    InventoryDlgData* pData = reinterpret_cast<InventoryDlgData*>(GetWindowLongPtr(hDlg, GWLP_USERDATA));
+
+    switch (msg) {
+        case WM_CREATE: {
+            CREATESTRUCT* pcs = reinterpret_cast<CREATESTRUCT*>(lParam);
+            pData = reinterpret_cast<InventoryDlgData*>(pcs->lpCreateParams);
+            SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pData));
+            pData->hFloatEdit  = NULL;
+            pData->editingItem = -1;
+
+            RECT rc; GetClientRect(hDlg, &rc);
+            int W = rc.right, H = rc.bottom;
+            int btnH = 38;
+
+            // ListView fills top portion. Multi-select enabled (no LVS_SINGLESEL).
+            pData->hList = CreateWindowEx(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "",
+                WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+                0, 0, W, H - btnH, hDlg, (HMENU)IDC_LIST_INVENTORY, GetModuleHandle(NULL), NULL);
+
+            ListView_SetExtendedListViewStyle(pData->hList,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+
+            // Group view: base-game items first, jungle items second.
+            ListView_EnableGroupView(pData->hList, TRUE);
+            {
+                bool hasJungle = false;
+                for (const auto& e : pData->entries) if (e.isJungle) { hasJungle = true; break; }
+
+                LVGROUP lg   = {};
+                lg.cbSize    = sizeof(LVGROUP);
+                lg.mask      = LVGF_HEADER | LVGF_GROUPID | LVGF_STATE;
+                lg.stateMask = LVGS_COLLAPSIBLE;
+                lg.state     = LVGS_COLLAPSIBLE;
+                lg.pszHeader = L"Items";
+                lg.iGroupId  = 0;
+                ListView_InsertGroup(pData->hList, -1, &lg);
+
+                if (hasJungle) {
+                    lg.pszHeader = L"Jungle Items";
+                    lg.iGroupId  = 1;
+                    ListView_InsertGroup(pData->hList, -1, &lg);
+                }
+            }
+
+            // Columns: Name | Count
+            LVCOLUMNA col = {};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+
+            col.fmt = LVCFMT_LEFT; col.cx = W - 80 - GetSystemMetrics(SM_CXVSCROLL) - 4;
+            col.pszText = const_cast<char*>("Name");
+            ListView_InsertColumn(pData->hList, 0, &col);
+
+            col.fmt = LVCFMT_RIGHT; col.cx = 80;
+            col.pszText = const_cast<char*>("Count");
+            ListView_InsertColumn(pData->hList, 1, &col);
+
+            // Populate rows
+            for (int i = 0; i < static_cast<int>(pData->entries.size()); ++i) {
+                const InventoryEntry& e = pData->entries[i];
+
+                std::string displayName = e.name;
+                std::replace(displayName.begin(), displayName.end(), '_', ' ');
+
+                LVITEMA lvi  = {};
+                lvi.mask     = LVIF_TEXT | LVIF_GROUPID;
+                lvi.iItem    = i;
+                lvi.iGroupId = e.isJungle ? 1 : 0;
+                lvi.pszText  = const_cast<char*>(displayName.c_str());
+                ListView_InsertItem(pData->hList, &lvi);
+
+                char countBuf[32];
+                _snprintf_s(countBuf, sizeof(countBuf), "%d", e.count);
+                lvi.mask     = LVIF_TEXT;
+                lvi.iSubItem = 1; lvi.pszText = countBuf;
+                ListView_SetItem(pData->hList, &lvi);
+            }
+
+            // OK / Cancel buttons
+            int btnW = 90, btnY = H - 30;
+            CreateWindowEx(0, "BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                W - btnW*2 - 16, btnY, btnW, 25, hDlg, (HMENU)IDC_BTN_INV_OK, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, "BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                W - btnW   -  6, btnY, btnW, 25, hDlg, (HMENU)IDC_BTN_INV_CANCEL, GetModuleHandle(NULL), NULL);
+
+            return 0;
+        }
+
+        case WM_SIZE: {
+            if (!pData || !pData->hList) return 0;
+            int W = LOWORD(lParam), H = HIWORD(lParam);
+            int btnH = 38;
+            SetWindowPos(pData->hList, NULL, 0, 0, W, H - btnH, SWP_NOZORDER);
+
+            // Name column fills remaining horizontal space
+            int nameW = W - 80 - GetSystemMetrics(SM_CXVSCROLL) - 4;
+            if (nameW < 80) nameW = 80;
+            ListView_SetColumnWidth(pData->hList, 0, nameW);
+
+            int btnW = 90, btnY = H - 30;
+            HWND hOK     = GetDlgItem(hDlg, IDC_BTN_INV_OK);
+            HWND hCancel = GetDlgItem(hDlg, IDC_BTN_INV_CANCEL);
+            SetWindowPos(hOK,     NULL, W - btnW*2 - 16, btnY, btnW, 25, SWP_NOZORDER);
+            SetWindowPos(hCancel, NULL, W - btnW   -  6, btnY, btnW, 25, SWP_NOZORDER);
+            return 0;
+        }
+
+        case WM_NOTIFY: {
+            if (!pData) return 0;
+            NMHDR* pnmh = reinterpret_cast<NMHDR*>(lParam);
+            if (pnmh->hwndFrom != pData->hList) return 0;
+
+            if (pnmh->code == NM_CLICK) {
+                NMITEMACTIVATE* pnmia = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+                if (pnmia->iSubItem == 1 && pnmia->iItem >= 0)
+                    OpenFloatEdit(pData, pnmia->iItem);
+            } else if (pnmh->code == LVN_KEYDOWN) {
+                NMLVKEYDOWN* pnkd = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+                if (pnkd->wVKey == VK_RETURN) {
+                    int focused = ListView_GetNextItem(pData->hList, -1, LVNI_FOCUSED);
+                    if (focused >= 0)
+                        OpenFloatEdit(pData, focused);
+                }
+            }
+            return 0;
+        }
+
+        case WM_COMMAND: {
+            WORD id = LOWORD(wParam);
+            if (id == IDC_BTN_INV_OK) {
+                CommitFloatEdit(pData);
+                // Write all pending changes back to the save
+                for (auto& [idx, newCount] : pData->pendingChanges) {
+                    const InventoryEntry& e = pData->entries[idx];
+                    g_saveGameManager.SetInventoryItemCount(e.key, newCount, e.isJungle);
+                }
+                DestroyWindow(hDlg);
+            } else if (id == IDC_BTN_INV_CANCEL) {
+                if (pData->hFloatEdit) {
+                    DestroyWindow(pData->hFloatEdit);
+                    pData->hFloatEdit  = NULL;
+                    pData->editingItem = -1;
+                }
+                DestroyWindow(hDlg);
+            }
+            return 0;
+        }
+
+        case WM_CLOSE:
+            CommitFloatEdit(pData);
+            for (auto& [idx, newCount] : pData->pendingChanges) {
+                const InventoryEntry& e = pData->entries[idx];
+                g_saveGameManager.SetInventoryItemCount(e.key, newCount, e.isJungle);
+            }
+            DestroyWindow(hDlg);
+            return 0;
+
+        case WM_DESTROY:
+            return 0;
+
+        default:
+            return DefWindowProc(hDlg, msg, wParam, lParam);
+    }
+}
+
+// Registers the inventory dialog class (once) and runs it as a modal window.
+static void ShowInventoryDialog(HWND hParent) {
+    std::vector<InventoryEntry> entries = g_saveGameManager.GetInventoryItems(g_refDb);
+    if (entries.empty()) {
+        MessageBox(hParent, "No inventory items found that match the reference database.",
+                   "Edit Inventory", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASSEX wc     = {};
+        wc.cbSize         = sizeof(wc);
+        wc.lpfnWndProc    = InvDlgProc;
+        wc.hInstance      = GetModuleHandle(NULL);
+        wc.hCursor        = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground  = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName  = "DaveSaveEdInvClass";
+        RegisterClassEx(&wc);
+        classRegistered = true;
+    }
+
+    InventoryDlgData data;
+    data.entries     = std::move(entries);
+    data.hList       = NULL;
+    data.hFloatEdit  = NULL;
+    data.editingItem = -1;
+
+    int W = 600, H = 520;
+    HWND hDlg = CreateWindowEx(
+        WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+        "DaveSaveEdInvClass", "Edit Inventory",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+        CW_USEDEFAULT, CW_USEDEFAULT, W, H,
+        hParent, NULL, GetModuleHandle(NULL), &data);
+    if (!hDlg) return;
+
+    // Center over parent
+    RECT pr; GetWindowRect(hParent, &pr);
+    RECT dr; GetWindowRect(hDlg,    &dr);
+    int dw = dr.right - dr.left, dh = dr.bottom - dr.top;
+    SetWindowPos(hDlg, NULL,
+        pr.left + (pr.right - pr.left - dw) / 2,
+        pr.top  + (pr.bottom - pr.top - dh) / 2,
+        0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+    EnableWindow(hParent, FALSE);
+    ShowWindow(hDlg, SW_SHOW);
+    UpdateWindow(hDlg);
+
+    MSG msg;
+    while (IsWindow(hDlg) && GetMessage(&msg, NULL, 0, 0)) {
+        // Tab cycles focus between list and buttons when no float-edit is active.
+        // IsDialogMessage would eat Enter and break the float-edit subclass proc.
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_TAB && !data.hFloatEdit) {
+            HWND hOK     = GetDlgItem(hDlg, IDC_BTN_INV_OK);
+            HWND hCancel = GetDlgItem(hDlg, IDC_BTN_INV_CANCEL);
+            HWND focused = GetFocus();
+            bool shift   = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            HWND next;
+            if (!shift)
+                next = (focused == data.hList) ? hOK : (focused == hOK) ? hCancel : data.hList;
+            else
+                next = (focused == data.hList) ? hCancel : (focused == hCancel) ? hOK : data.hList;
+            SetFocus(next);
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    EnableWindow(hParent, TRUE);
+    SetForegroundWindow(hParent);
 }
 
 // --- Dialog Procedure ---
@@ -365,11 +732,13 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
             int total_currency_block_height   = (control_height * 4) + (spacing_y * 3);
             int total_jungle_block_height     = (control_height * 2) + (spacing_y * 1);
             int total_ingredient_block_height = control_height;
+            int total_inventory_block_height  = control_height;
             int total_file_block_height       = control_height + 5;
 
-            int total_ui_elements_height = total_currency_block_height  + section_spacing_y +
-                                           total_jungle_block_height    + section_spacing_y +
-                                           total_ingredient_block_height + section_spacing_y +
+            int total_ui_elements_height = total_currency_block_height    + section_spacing_y +
+                                           total_jungle_block_height      + section_spacing_y +
+                                           total_ingredient_block_height  + section_spacing_y +
+                                           total_inventory_block_height   + section_spacing_y +
                                            total_file_block_height;
 
             // Calculate initial Y position to vertically center the UI elements.
@@ -442,6 +811,15 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
                 ing_x_start, y_pos, ing_btn_width, control_height, hDlg, (HMENU)IDC_BTN_MAX_OWN_INGREDIENTS, GetModuleHandle(NULL), NULL);
             CreateWindowEx(0, "BUTTON", "Max All Ingredients", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 ing_x_start + ing_btn_width + ing_btn_spacing, y_pos, ing_btn_width, control_height, hDlg, (HMENU)IDC_BTN_MAX_ALL_INGREDIENTS, GetModuleHandle(NULL), NULL);
+            y_pos += control_height + section_spacing_y;
+
+            // Create Inventory Editor button (full ingredient row width, centered).
+            int inv_btn_width = ingredient_row_total_width;
+            int inv_x_start   = (dialog_client_width - inv_btn_width) / 2;
+            g_hBtnEditInventory = CreateWindowEx(0, "BUTTON", "Edit Inventory...",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
+                inv_x_start, y_pos, inv_btn_width, control_height,
+                hDlg, (HMENU)IDC_BTN_EDIT_INVENTORY, GetModuleHandle(NULL), NULL);
             y_pos += control_height + section_spacing_y;
 
             // Create File Operation UI Elements.
@@ -534,6 +912,10 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
                     } else {
                         MessageBox(hDlg, "No save file loaded or valid data to modify!", "Error", MB_ICONWARNING | MB_OK);
                     }
+                    break;
+                case IDC_BTN_EDIT_INVENTORY:
+                    LogMessage(LOG_INFO_LEVEL, "Edit Inventory button clicked.");
+                    ShowInventoryDialog(hDlg);
                     break;
                 case IDC_BTN_LOAD_SAVE: {
                     LogMessage(LOG_INFO_LEVEL, "Load Save File button clicked.");

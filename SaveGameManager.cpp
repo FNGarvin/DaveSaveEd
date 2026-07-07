@@ -551,6 +551,102 @@ void SaveGameManager::MaxAllIngredients(sqlite3* db) {
     sqlite3_finalize(stmt);
 }
 
+std::vector<InventoryEntry> SaveGameManager::GetInventoryItems(sqlite3* db) const {
+    std::vector<InventoryEntry> result;
+    if (!m_isSaveFileLoaded || !db) return result;
+
+    // InventoryItemSlot: exclude items flagged with the Unknown_PU detail image
+    // (boat skins, maps, jokers, etc. all share this marker).
+    static const char* kInvSQL =
+        "SELECT ItemTextID, MaxCount FROM Items WHERE TID = ?"
+        " AND ItemDetailImage <> 'Unknown_PU'";
+
+    // JungleVilInven: exclude furniture — everything else (crafting materials,
+    // ingredients, usables) is fair game to edit.
+    static const char* kJunSQL =
+        "SELECT ItemTextID, MaxCount FROM Items WHERE TID = ?"
+        " AND CategoryType <> 'Furniture'";
+
+    sqlite3_stmt* stmtInv = nullptr;
+    sqlite3_stmt* stmtJun = nullptr;
+    if (sqlite3_prepare_v2(db, kInvSQL, -1, &stmtInv, NULL) != SQLITE_OK) {
+        LogMessage(LOG_ERROR_LEVEL, (std::string("GetInventoryItems: stmtInv prepare failed: ") + sqlite3_errmsg(db)).c_str());
+        return result;
+    }
+    if (sqlite3_prepare_v2(db, kJunSQL, -1, &stmtJun, NULL) != SQLITE_OK) {
+        LogMessage(LOG_ERROR_LEVEL, (std::string("GetInventoryItems: stmtJun prepare failed: ") + sqlite3_errmsg(db)).c_str());
+        sqlite3_finalize(stmtInv);
+        return result;
+    }
+
+    auto lookup = [&](sqlite3_stmt* stmt, int tid, std::string& outName, int& outMax) -> bool {
+        sqlite3_reset(stmt);
+        sqlite3_bind_int(stmt, 1, tid);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            outName = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            outMax  = sqlite3_column_int(stmt, 1);
+            return true;
+        }
+        return false;
+    };
+
+    if (m_saveData.contains("InventoryItemSlot") && m_saveData["InventoryItemSlot"].is_object()) {
+        for (auto& [key, val] : m_saveData["InventoryItemSlot"].items()) {
+            if (!val.contains("itemID") || !val.contains("totalCount")) continue;
+            int id = val["itemID"].get<int>();
+            std::string name; int maxc;
+            if (!lookup(stmtInv, id, name, maxc)) continue;
+            InventoryEntry e;
+            e.key      = key;
+            e.itemID   = id;
+            e.name     = name;
+            e.count    = val["totalCount"].get<int>();
+            e.maxCount = maxc;
+            e.isJungle = false;
+            result.push_back(std::move(e));
+        }
+    }
+
+    if (IsJungleDLCInstalled() &&
+        m_saveData.contains("JDLCContents") &&
+        m_saveData["JDLCContents"].contains("JungleVilInven") &&
+        m_saveData["JDLCContents"]["JungleVilInven"].is_object()) {
+        for (auto& [key, val] : m_saveData["JDLCContents"]["JungleVilInven"].items()) {
+            if (!val.contains("itemID") || !val.contains("count")) continue;
+            int id = val["itemID"].get<int>();
+            std::string name; int maxc;
+            if (!lookup(stmtJun, id, name, maxc)) continue;
+            InventoryEntry e;
+            e.key      = key;
+            e.itemID   = id;
+            e.name     = name;
+            e.count    = val["count"].get<int>();
+            e.maxCount = maxc;
+            e.isJungle = true;
+            result.push_back(std::move(e));
+        }
+    }
+
+    sqlite3_finalize(stmtInv);
+    sqlite3_finalize(stmtJun);
+    LogMessage(LOG_INFO_LEVEL, (std::string("GetInventoryItems: ") + std::to_string(result.size()) + " items passed filter.").c_str());
+    // Base-game items first (alphabetical), jungle items second (alphabetical).
+    std::sort(result.begin(), result.end(), [](const InventoryEntry& a, const InventoryEntry& b) {
+        if (a.isJungle != b.isJungle) return !a.isJungle;
+        return a.name < b.name;
+    });
+    return result;
+}
+
+void SaveGameManager::SetInventoryItemCount(const std::string& key, int count, bool isJungle) {
+    if (!m_isSaveFileLoaded) return;
+    if (isJungle) {
+        m_saveData["JDLCContents"]["JungleVilInven"][key]["count"] = count;
+    } else {
+        m_saveData["InventoryItemSlot"][key]["totalCount"] = count;
+    }
+}
+
 std::filesystem::path SaveGameManager::GetDefaultSaveGameDirectoryAndLatestFile(std::string& latestSaveFileName) {
     LogMessage(LOG_INFO_LEVEL, "Searching for latest save file (Steam and Xbox)...");
     

@@ -41,6 +41,16 @@ using ordered_json = nlohmann::basic_json<my_workaround_fifo_map>;
 // Forward declaration
 struct sqlite3;
 
+// Represents one editable item in InventoryItemSlot or JDLCContents.JungleVilInven.
+struct InventoryEntry {
+    std::string key;      // GUID string (InventoryItemSlot) or itemID string (JungleVilInven)
+    int         itemID;
+    std::string name;     // ItemTextID from reference DB
+    int         count;    // current totalCount / count
+    int         maxCount; // MaxCount from reference DB (9999 = sentinel / uncapped)
+    bool        isJungle; // false = InventoryItemSlot, true = JungleVilInven
+};
+
 class SaveGameManager {
 public:
     SaveGameManager();
@@ -76,6 +86,10 @@ public:
     // Ingredient Modifications
     void MaxOwnIngredients(sqlite3* db);
     void MaxAllIngredients(sqlite3* db);
+
+    // Inventory Editing
+    std::vector<InventoryEntry> GetInventoryItems(sqlite3* db) const;
+    void SetInventoryItemCount(const std::string& key, int count, bool isJungle);
 
     // State
     bool IsSaveFileLoaded() const { return m_isSaveFileLoaded; }

@@ -40,7 +40,7 @@ jobs:
       # manual version bump in the file is needed before tagging.
       - name: Build release package
         shell: cmd
-        run: nmake RELEASE_NAME="${{ steps.version.outputs.RELEASE_NAME }}" release
+        run: nmake RELEASE_NAME=${{ steps.version.outputs.RELEASE_NAME }} release
 
       # Generates SLSA Build L1 provenance and attaches it to the zip in the
       # GitHub attestations store, verifiable with: gh attestation verify <zip>

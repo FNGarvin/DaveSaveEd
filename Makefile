@@ -61,7 +61,7 @@ LIB_PATHS = /LIBPATH:"dist\zlib\lib\x64"
 # Libraries to link with the executable.
 # zlib.lib: Static library for zlib.
 # User32.lib, Gdi32.lib, Shell32.lib, Comdlg32.lib, Ole32.lib: Standard Windows API libraries.
-LIBS = zlib.lib User32.lib Gdi32.lib Shell32.lib Comdlg32.lib Ole32.lib
+LIBS = zlib.lib User32.lib Gdi32.lib Shell32.lib Comdlg32.lib Ole32.lib Comctl32.lib
 
 # Output directory for compiled binaries and object files.
 BIN_DIR = bin

@@ -20,10 +20,11 @@ The easiest way to use DaveSaveEd is to download the pre-compiled executable.
 
 ## Features
 
-* **Currency Editing:** Easily maximize Gold, Bei, and Artisan's Flame.
+* **Currency Editing:** Easily maximize Gold, Bei, Artisan's Flame, Follower Count, and Jungle DLC currencies (Jungle Gold, Jungle Flame).
 * **Ingredient Management:**
     * Maximize quantities of ingredients you already own.
     * Add and maximize quantities for all known ingredients in the game.
+* **Inventory Editing:** Modify quantities of non-ingredient items (seashells, jungle gifts, materials, etc.) via a spreadsheet-style grid.
 * **Cross-Platform Support:** Automatically detects both Steam and Xbox/Windows Store save files.
 * **Smart Suggestion:** Defaults to the most recently modified save file across all detected platforms.
 * **Automatic Backups:** Creates a backup of your original save before writing any changes.
@@ -34,21 +35,26 @@ The easiest way to use DaveSaveEd is to download the pre-compiled executable.
 2.  **Extract:** Unzip the downloaded file to a location of your choice (e.g., `C:\Games\DaveSaveEd`).
 3.  **Launch:** Navigate to the extracted folder and launch `DaveSaveEd.exe` or run it via the Windows Run command (Windows key + R).
 
-    For verbose logging to a file (`DaveSaveEd.log` in the application's directory), run it from with the `-log` argument:
+    For verbose logging to a file (`DaveSaveEd.log` in the application's directory), run it with the `-log` argument:
     ```bash
     DaveSaveEd.exe -log
     ```
 
 ## How to Use
-![DaveSaveEd Editor](images/editor.jpg)
+
+<p align="center">
+  <img src="images/ui.jpg" width="49%" alt="DaveSaveEd UI" />
+  <img src="images/editor.jpg" width="49%" alt="DaveSaveEd Editor" />
+</p>
 
 1.  **Launch `DaveSaveEd.exe`**.
 2.  **Load Save File:** Click "Load Save File..." The editor will attempt to automatically locate your game's save directory (Steam or Xbox) and pre-select the most recent save file.
     *   **Steam:** Usually named something like `GameSave_00_GD.sav`.
     *   **Xbox/Windows Store:** Usually named with a long string of random numbers/hex characters (e.g., `F8AJOIDSA7EBJ8971B`). The editor will automatically switch the file filter to show these files.
     *   **Tip:** Unless you explicitly intend to modify an older, inactive save, simply click "Open" without changing the pre-filled path.
-3.  **Modify Values:** Use the "Set to Max" buttons for currency or the ingredient modification buttons to apply changes.
-4.  **Write Save File:** Click "Write Save File" to save your changes. A backup of your original save will be automatically created in temporary storage (usually `%TEMP%\DaveSaveEd_Backups`), in case you need to revert.
+3.  **Modify Values:** Use the "Set to Max" buttons for currency or the ingredient modification buttons to apply changes.  "Own" affects ingredients you already own where "All" will fill your inventory with every ingredient in the game. 
+4.  **Edit Inventory:** This option opens up a spreadsheet style grid to edit non-ingredient items (seashells, jungle gifts, etc.).  Use shift and arrow keys to select multiple items to edit at once if desired.
+5.  **Write Save File:** Click "Write Save File" to save your changes. A backup of your original save will be automatically created in temporary storage (usually `%TEMP%\DaveSaveEd_Backups`), in case you need to revert.
 
 ---
 
@@ -61,7 +67,7 @@ The easiest way to use DaveSaveEd is to download the pre-compiled executable.
 * **Application crashes or misbehaves**:
     * Always ensure you're using the latest version of the editor.
     * Report issues on the GitHub issue tracker.
-* **In-game issues after modifying**: Restore from a backup. The editor creates timestamped backups in a `backups` folder next to your save file.
+* **In-game issues after modifying**: Restore from a backup. The editor creates timestamped backups in `%TEMP%\DaveSaveEd_Backups`.
 * **Modifications (especially Gold, Bei, Artisan's Flame, or Follower Count) are not visible in-game even after writing the save:**
     * **Incorrect Save File:** The game typically uses specific active saves. For Steam, ensure you modified the latest `GameSave_XX_GD.sav`. For Xbox, ensure you modified the latest hex-named file (usually the one with the largest file size and most recent timestamp). The "Load Save File..." dialog handles this automatically; generally, you should just click "Open" after launching it.
     * **Early Game Scripting:** During the game's initial tutorial phases (e.g., Day 1, before you repair the sushi bar or unlock the full restaurant management system), certain values like Gold or Follower Count are hard-scripted and may override changes you make in the save file. For example, your gold will remain -100 until the sushi bar quest is completed. We recommend progressing past these initial scripted sequences before expecting your modifications to take full effect.
@@ -81,7 +87,7 @@ To build this project, you will need:
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/FNGarvin/DaveSaveEd.git](https://github.com/FNGarvin/DaveSaveEd.git)
+    git clone https://github.com/FNGarvin/DaveSaveEd.git
     cd DaveSaveEd
     ```
 2.  **Build:**
